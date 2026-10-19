@@ -16,6 +16,7 @@ concurrency:
 
 permissions:
   contents: write
+  issues: write
 
 jobs:
   solve:
@@ -51,3 +52,21 @@ jobs:
             sleep 5
           done
           exit 1
+
+      - name: Open an issue if any question was not recognized
+        if: always() && hashFiles('needs_review.json') != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh label create needs-review --color d93f0b --force >/dev/null 2>&1 || true
+          open=$(gh issue list --label needs-review --state open --json number --jq length)
+          if [ "$open" = "0" ]; then
+            {
+              echo "The solver hit questions it does not recognize. They were answered with a placeholder and need fixing within 3 hours of release."
+              echo
+              echo '```json'
+              cat needs_review.json
+              echo '```'
+            } > body.md
+            gh issue create --title "Unrecognized quiz questions" --label needs-review --body-file body.md
+          fi
