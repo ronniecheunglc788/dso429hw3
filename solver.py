@@ -264,8 +264,44 @@ def fetch(url, attempts=4):
     raise RuntimeError(f"could not fetch {url}: {last}")
 
 
+QUESTIONS_GIT = "https://github.com/FaisalXL/dso429-hourly-quiz.git"
+
+
+def max_round(text):
+    rounds = [int(line.split(",", 1)[0]) for line in text.splitlines()[1:] if line[:1].isdigit()]
+    return max(rounds) if rounds else 0
+
+
+def fetch_questions():
+    """Get the freshest questions.csv we can.
+
+    raw.githubusercontent.com is a CDN and different edge servers can hand
+    back copies several minutes stale. A shallow git clone always reads the
+    current commit, so try that first, then fall back to several raw fetches
+    and keep whichever copy has the most rounds.
+    """
+    import subprocess
+    import tempfile
+    candidates = []
+    try:
+        with tempfile.TemporaryDirectory() as tmp:
+            subprocess.run(["git", "clone", "-q", "--depth", "1", QUESTIONS_GIT, tmp],
+                           check=True, timeout=120, capture_output=True)
+            candidates.append(Path(tmp, "questions.csv").read_text())
+    except Exception as e:
+        print(f"git fetch failed, using raw CDN: {e}", file=sys.stderr)
+    for _ in range(3):
+        try:
+            candidates.append(fetch(QUESTIONS_URL, attempts=2))
+        except Exception:
+            pass
+    if not candidates:
+        raise RuntimeError("could not fetch questions.csv from any source")
+    return max(candidates, key=max_round)
+
+
 def load_questions(local=None):
-    text = Path(local).read_text() if local else fetch(QUESTIONS_URL)
+    text = Path(local).read_text() if local else fetch_questions()
     rows = list(csv.DictReader(io.StringIO(text)))
     rounds = {}
     for r in rows:
