@@ -1,0 +1,71 @@
+name: Quiz relay (always on)
+
+# One run stays alive for ~5h40m, solving and pushing every 2 minutes, then
+# starts its own replacement. GitHub's cron is best effort and can lag or skip,
+# so this loop is the main driver; hourly-quiz.yml restarts it if it ever stops.
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths: [solver.py, .github/workflows/relay.yml]
+
+concurrency:
+  group: quiz-relay
+  cancel-in-progress: true   # a newer relay (e.g. after a code change) replaces the old one
+
+permissions:
+  contents: write
+  issues: write
+  actions: write
+
+jobs:
+  relay:
+    runs-on: ubuntu-latest
+    timeout-minutes: 355
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Solve and push every 2 minutes
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: |
+          git config user.name "quiz-bot"
+          git config user.email "quiz-bot@users.noreply.github.com"
+          end=$(( $(date +%s) + 340*60 ))
+          while [ "$(date +%s)" -lt "$end" ]; do
+            git pull -q --rebase origin main || git rebase --abort || true
+            python3 solver.py || echo "solver error, will retry"
+            git add answers
+            [ -f needs_review.json ] && git add needs_review.json
+            git ls-files --deleted -- needs_review.json | grep -q . && git rm -q --cached needs_review.json
+            if ! git diff --cached --quiet; then
+              git commit -q -m "answers: $(git diff --cached --name-only | grep -o 'round-[0-9]*' | tr '\n' ' ')"
+              for i in 1 2 3 4 5; do
+                git push -q origin HEAD:main && echo "pushed at $(date -u +%H:%M:%S)" && break
+                sleep 5; git pull -q --rebase origin main || true
+              done
+            fi
+            if [ -f needs_review.json ]; then
+              gh label create needs-review --color d93f0b --force >/dev/null 2>&1 || true
+              open=$(gh issue list --label needs-review --state open --json number --jq length 2>/dev/null || echo 1)
+              if [ "$open" = "0" ]; then
+                { echo "The solver hit questions it does not recognize. They were answered with a placeholder and need fixing within 3 hours of release."; echo; echo '```json'; cat needs_review.json; echo '```'; } > /tmp/body.md
+                gh issue create --title "Unrecognized quiz questions" --label needs-review --body-file /tmp/body.md || true
+              fi
+            fi
+            sleep 120
+          done
+
+      - name: Start the next relay
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh workflow run relay.yml --ref main

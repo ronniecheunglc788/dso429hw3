@@ -1,14 +1,10 @@
-name: Hourly quiz solver
+name: Hourly quiz solver (backup + relay restarter)
 
 on:
   schedule:
-    # Every 5 minutes. GitHub may delay scheduled runs under load, which is
-    # fine: each round has a 3-hour full-credit window.
+    # Best effort: GitHub may delay or skip these. relay.yml is the main driver.
     - cron: "*/5 * * * *"
   workflow_dispatch:
-  push:
-    branches: [main]
-    paths: [solver.py, .github/workflows/hourly-quiz.yml]
 
 concurrency:
   group: hourly-quiz
@@ -17,6 +13,7 @@ concurrency:
 permissions:
   contents: write
   issues: write
+  actions: write
 
 jobs:
   solve:
@@ -31,6 +28,16 @@ jobs:
         with:
           python-version: "3.12"
 
+      - name: Restart the relay if it is not running
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          active=$(gh run list --workflow relay.yml --json status --jq '[.[] | select(.status=="in_progress" or .status=="queued")] | length')
+          if [ "$active" = "0" ]; then
+            echo "relay not running, starting it"
+            gh workflow run relay.yml --ref main
+          fi
+
       - name: Solve any unanswered rounds
         env:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
@@ -40,33 +47,15 @@ jobs:
         run: |
           git config user.name "quiz-bot"
           git config user.email "quiz-bot@users.noreply.github.com"
-          git add answers needs_review.json 2>/dev/null || git add answers
+          git add answers
+          [ -f needs_review.json ] && git add needs_review.json
           if git diff --cached --quiet; then
             echo "no new answers"
             exit 0
           fi
           git commit -m "answers: $(git diff --cached --name-only | grep -o 'round-[0-9]*' | tr '\n' ' ')"
-          # Retry the push in case another run landed first
           for i in 1 2 3; do
             git pull --rebase origin main && git push origin HEAD:main && exit 0
             sleep 5
           done
           exit 1
-
-      - name: Open an issue if any question was not recognized
-        if: always() && hashFiles('needs_review.json') != ''
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          gh label create needs-review --color d93f0b --force >/dev/null 2>&1 || true
-          open=$(gh issue list --label needs-review --state open --json number --jq length)
-          if [ "$open" = "0" ]; then
-            {
-              echo "The solver hit questions it does not recognize. They were answered with a placeholder and need fixing within 3 hours of release."
-              echo
-              echo '```json'
-              cat needs_review.json
-              echo '```'
-            } > body.md
-            gh issue create --title "Unrecognized quiz questions" --label needs-review --body-file body.md
-          fi
