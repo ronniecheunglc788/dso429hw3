@@ -32,7 +32,7 @@ jobs:
         with:
           python-version: "3.12"
 
-      - name: Solve and push every 2 minutes
+      - name: Solve and push every minute
         env:
           GH_TOKEN: ${{ github.token }}
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
@@ -41,17 +41,18 @@ jobs:
           git config user.email "quiz-bot@users.noreply.github.com"
           end=$(( $(date +%s) + 340*60 ))
           while [ "$(date +%s)" -lt "$end" ]; do
-            git pull -q --rebase origin main || git rebase --abort || true
+            # Start every loop from exactly what is on GitHub. Solver output is
+            # deterministic, so nothing local is worth keeping, and this means a
+            # push race or a fix Claude pushed can never leave the loop stuck.
+            git fetch -q origin main && git reset -q --hard origin/main
             python3 solver.py || echo "solver error, will retry"
             git add answers
             [ -f needs_review.json ] && git add needs_review.json
             git ls-files --deleted -- needs_review.json | grep -q . && git rm -q --cached needs_review.json
             if ! git diff --cached --quiet; then
               git commit -q -m "answers: $(git diff --cached --name-only | grep -o 'round-[0-9]*' | tr '\n' ' ')"
-              for i in 1 2 3 4 5; do
-                git push -q origin HEAD:main && echo "pushed at $(date -u +%H:%M:%S)" && break
-                sleep 5; git pull -q --rebase origin main || true
-              done
+              git push -q origin HEAD:main && echo "pushed at $(date -u +%H:%M:%S)" \
+                || echo "push lost a race, will redo from a clean copy next loop"
             fi
             if [ -f needs_review.json ]; then
               gh label create needs-review --color d93f0b --force >/dev/null 2>&1 || true
@@ -61,7 +62,7 @@ jobs:
                 gh issue create --title "Unrecognized quiz questions" --label needs-review --body-file /tmp/body.md || true
               fi
             fi
-            sleep 120
+            sleep 60
           done
 
       - name: Start the next relay
