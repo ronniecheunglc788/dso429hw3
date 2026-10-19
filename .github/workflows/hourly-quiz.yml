@@ -1,0 +1,53 @@
+name: Hourly quiz solver
+
+on:
+  schedule:
+    # Every 5 minutes. GitHub may delay scheduled runs under load, which is
+    # fine: each round has a 3-hour full-credit window.
+    - cron: "*/5 * * * *"
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths: [solver.py, .github/workflows/hourly-quiz.yml]
+
+concurrency:
+  group: hourly-quiz
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+
+jobs:
+  solve:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Solve any unanswered rounds
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: python3 solver.py
+
+      - name: Commit and push
+        run: |
+          git config user.name "quiz-bot"
+          git config user.email "quiz-bot@users.noreply.github.com"
+          git add answers needs_review.json 2>/dev/null || git add answers
+          if git diff --cached --quiet; then
+            echo "no new answers"
+            exit 0
+          fi
+          git commit -m "answers: $(git diff --cached --name-only | grep -o 'round-[0-9]*' | tr '\n' ' ')"
+          # Retry the push in case another run landed first
+          for i in 1 2 3; do
+            git pull --rebase origin main && git push origin HEAD:main && exit 0
+            sleep 5
+          done
+          exit 1
