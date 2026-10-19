@@ -69,4 +69,11 @@ jobs:
         if: always()
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh workflow run relay.yml --ref main
+        run: |
+          # Keep the chain going through Friday, with margin in case the quiz
+          # runs a day long. Stop at Saturday Oct 24, 12:00 PM Pacific.
+          if [ "$(date +%s)" -ge "$(date -d 2026-10-24T19:00:00Z +%s)" ]; then
+            echo "quiz window over, not restarting"
+            exit 0
+          fi
+          gh workflow run relay.yml --ref main

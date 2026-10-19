@@ -33,6 +33,9 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           active=$(gh run list --workflow relay.yml --json status --jq '[.[] | select(.status=="in_progress" or .status=="queued")] | length')
+          if [ "$(date +%s)" -ge "$(date -d 2026-10-24T19:00:00Z +%s)" ]; then
+            echo "quiz window over"; exit 0
+          fi
           if [ "$active" = "0" ]; then
             echo "relay not running, starting it"
             gh workflow run relay.yml --ref main
