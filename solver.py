@@ -252,7 +252,10 @@ def fetch(url, attempts=4):
     last = None
     for i in range(attempts):
         try:
-            req = urllib.request.Request(url, headers={"Cache-Control": "no-cache", "Pragma": "no-cache"})
+            # raw.githubusercontent.com caches for ~5 minutes; a unique query
+            # string skips the stale copy so new rounds show up right away.
+            busted = f"{url}?t={int(time.time() * 1000)}"
+            req = urllib.request.Request(busted, headers={"Cache-Control": "no-cache", "Pragma": "no-cache"})
             with urllib.request.urlopen(req, timeout=30) as r:
                 return r.read().decode("utf-8")
         except Exception as e:
